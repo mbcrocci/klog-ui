@@ -1,8 +1,9 @@
-//! A bounded log buffer with a live substring filter. Lines get consecutive ids, so a line is
+//! A bounded log buffer with a live filter (see [`crate::query`]). Lines get consecutive ids, so a line is
 //! found from its id in O(1) even after old lines fall off the front.
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::query::Query;
 use crate::structured::{Entry, Severity};
 
 /// Lines kept per stream; older ones are dropped.
@@ -29,7 +30,7 @@ pub struct Line {
     /// The line parsed, when it's a JSON object.
     pub entry: Option<Box<Entry>>,
     /// `source` and `text` lowercased, for case-insensitive filtering.
-    haystack: String,
+    pub(crate) haystack: String,
 }
 
 impl Line {
@@ -82,7 +83,11 @@ pub struct LogBuffer {
     next_id: u64,
     /// Ids of the lines matching `query`, oldest first.
     shown: VecDeque<u64>,
-    query: String,
+    /// The filter as typed, trimmed.
+    query_text: String,
+    query: Option<Query>,
+    /// Why the filter's text isn't a valid query; the last valid one stays in force.
+    pub query_error: Option<String>,
     /// Colour slots by pod name.
     slots: HashMap<String, usize>,
     /// Bumped when lines fall off the front, so virtual rows know keys moved.
@@ -126,16 +131,27 @@ impl LogBuffer {
     }
 
     fn matches(&self, line: &Line) -> bool {
-        self.query.is_empty() || line.haystack.contains(&self.query)
+        self.query.as_ref().is_none_or(|q| q.matches(line))
     }
 
-    /// Re-filters every line; returns whether the query changed.
-    pub fn set_query(&mut self, query: &str) -> bool {
-        let query = query.trim().to_lowercase();
-        if query == self.query {
+    /// Re-filters every line; returns whether the text changed.
+    pub fn set_query(&mut self, text: &str) -> bool {
+        let text = text.trim();
+        if text == self.query_text {
             return false;
         }
-        self.query = query;
+        self.query_text = text.to_owned();
+        match Query::parse(text) {
+            Ok(q) => {
+                self.query = q;
+                self.query_error = None;
+            }
+            // A half-typed query (an open quote, a missing value) keeps the last good filter.
+            Err(e) => {
+                self.query_error = Some(e);
+                return true;
+            }
+        }
         self.shown = self.lines.iter().filter(|l| self.matches(l)).map(|l| l.id).collect();
         self.version += 1;
         true
@@ -143,13 +159,22 @@ impl LogBuffer {
 
     /// The `i`th shown line.
     pub fn shown(&self, i: usize) -> Option<&Line> {
-        let id = *self.shown.get(i)?;
+        self.get(*self.shown.get(i)?)
+    }
+
+    /// The line with this id, while it's still kept.
+    pub fn get(&self, id: u64) -> Option<&Line> {
         let first = self.lines.front()?.id;
         self.lines.get(usize::try_from(id.checked_sub(first)?).ok()?)
     }
 
     pub fn shown_id(&self, i: usize) -> u64 {
         self.shown.get(i).copied().unwrap_or(u64::MAX)
+    }
+
+    #[cfg(test)]
+    pub fn take_last(&mut self) -> Option<Line> {
+        self.lines.pop_back()
     }
 }
 

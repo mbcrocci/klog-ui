@@ -7,6 +7,7 @@
 mod app;
 mod kube;
 mod logs;
+mod query;
 mod structured;
 mod view;
 

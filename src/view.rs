@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use rune::{Color, Cx, El, GrowthSpec, Icon, ScrollSpec, Span, Tx, col, el, icon, oklch, rich, row, text};
+use rune_kit::{MenuItem, context_menu};
 use rune_kit::shell::{PaneMotion, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle, SplitView, TOOLBAR_HEIGHT, Toolbar};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, Spinner, TextInput,
@@ -13,6 +14,7 @@ use rune_kit::{
 use crate::app::{App, Format, Resources, Stream};
 use crate::kube::{Kind, Resource};
 use crate::logs::{Level, Line};
+use crate::query::{self, Part};
 use crate::structured::{self, Entry, Severity, Tok};
 
 macro_rules! icon {
@@ -42,7 +44,7 @@ pub fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = Kit::neutral(cx.system_dark());
     let mut overlays = Vec::new();
     let inset = cx.titlebar_inset();
-    let shell = SplitView::new(main(s, &k))
+    let shell = SplitView::new(main(s, &k, &mut overlays))
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k, &mut overlays))
         .toolbar(toolbar(s, &k))
         .titlebar_inset(inset)
@@ -235,11 +237,25 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
     } else {
         format!("{} of {}", s.logs.shown_len(), s.logs.total())
     };
+    let spans: Vec<Span> = query::highlight(&s.filter.text)
+        .into_iter()
+        .map(|(r, part)| {
+            let c = match part {
+                Part::Key => tok_color(Tok::Logger, k.dark, k),
+                Part::Op | Part::Keyword => k.c.text_faint,
+                Part::Value => tok_color(Tok::Str, k.dark, k),
+            };
+            Span::new(r.start, r.end).color(c)
+        })
+        .collect();
     let filter = TextInput::new(&s.filter)
         .placeholder("Filter logs")
+        .label("Filter logs")
         .leading_icon(&glyphs::SEARCH)
         .clear_button()
-        .width(Some(240.0))
+        .width(Some(300.0))
+        .spans(spans)
+        .invalid(s.logs.query_error.is_some())
         .on_edit(|s: &mut App| &mut s.filter)
         .on_change(|s: &mut App, _| {
             let q = s.filter.text.clone();
@@ -250,6 +266,10 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
             s.logs.set_query("");
         })
         .build(k)
+        .help(match &s.logs.query_error {
+            Some(e) => format!("Incomplete query: {e}. The last complete one still applies."),
+            None => FILTER_HELP.to_owned(),
+        })
         .key("log-filter");
     let btn = |icon: &'static Icon, help: &str| {
         IconButton::new(icon).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Regular).help(help.to_owned()).label(help.to_owned())
@@ -292,7 +312,39 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
 
 // ---- Logs ------------------------------------------------------------------------------------
 
-fn main(s: &App, k: &Kit) -> El {
+/// The menu a right-click on a log line opens: copy it, or narrow the filter to its pod.
+fn line_menu(s: &App, k: &Kit, overlays: &mut Vec<El>) -> El {
+    let line = s.line_menu.and_then(|(id, _)| s.logs.get(id));
+    let mut menu = context_menu("line-menu", el(), line.and(s.line_menu.map(|(_, p)| p))).on_close(|s: &mut App| s.line_menu = None);
+    if let Some(l) = line {
+        let id = l.id;
+        menu = menu.item(MenuItem::new("Copy line").on_select_tx(move |s: &mut App, tx| s.copy_line(id, tx)));
+        if let Some(e) = &l.entry {
+            let msg = e.message.clone();
+            menu = menu.item(MenuItem::new("Copy message").on_select_tx(move |s: &mut App, tx| {
+                s.line_menu = None;
+                tx.copy(msg.clone());
+            }));
+        }
+        let pod = l.source.split('/').next().unwrap_or_default().to_owned();
+        if !pod.is_empty() {
+            menu = menu.separator().item(MenuItem::new("Show only this pod").on_select(move |s: &mut App| {
+                s.line_menu = None;
+                s.set_filter(format!("pod ~ '{pod}'"));
+            }));
+        }
+    }
+    menu.build(k, overlays).key("line-menu-anchor")
+}
+
+const FILTER_HELP: &str = "Words match anywhere; quote a phrase.\n\
+key = value   equals (any case, * wildcard)\n\
+key ~ value   contains (or key:value)\n\
+!= and !~   negate;  > >= < <=   compare numbers\n\
+Keys: any field (err.message for nested), msg, level, logger, time, pod, raw\n\
+Combine with and (or a space), or, not / -, and ( )";
+
+fn main(s: &App, k: &Kit, overlays: &mut Vec<El>) -> El {
     let body = col().key("logs").w_full().h_full().min_h(0.0);
     if s.selected.is_none() {
         return body.center().gap(6.0).child(text("Select a workload").font(k.ty.ui_medium).color(k.c.text_muted)).child(
@@ -320,7 +372,7 @@ fn main(s: &App, k: &Kit) -> El {
         .virtual_rows_version(s.logs.version);
     let viewport = col().key(LOG_SCROLL).w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: true });
     let viewport = if s.wrap { viewport.child(rows) } else { viewport.scroll_xy().child(rows) };
-    body.fill(k.c.bg_base).child(viewport)
+    body.fill(k.c.bg_base).child(viewport).child(line_menu(s, k, overlays))
 }
 
 fn log_row(l: &Line, s: &App, k: &Kit, dark: bool) -> El {
@@ -343,6 +395,23 @@ fn log_row(l: &Line, s: &App, k: &Kit, dark: bool) -> El {
             line.child(if s.wrap { msg.wrap_anywhere().grow(1.0).shrink() } else { msg })
         }
     };
+    let id = l.id;
+    let copied = s.copied.is_some_and(|(c, _)| c == id);
+    let copy = IconButton::new(if copied { k.glyph.check_small } else { k.glyph.copy })
+        .variant(IconButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .help("Copy line")
+        .on_press_tx(move |s: &mut App, tx| s.copy_line(id, tx))
+        .build(k);
+    // Shown while the row is hovered (or just copied), over the line's end.
+    let copy = el()
+        .key("copy")
+        .pin(None, Some(0.0), Some(6.0), None)
+        .radius(k.radius.sm)
+        .fill(k.c.bg_base)
+        .group_opacity(if copied { 1.0 } else { 0.0 }, 1.0)
+        .child(copy);
+    let line = line.hover_group().child(copy).on_secondary_press(move |s: &mut App, p, _| s.line_menu = Some((id, p)));
     match l.level {
         Level::Error => line.fill(k.c.danger.bg),
         _ => line.hover(k.c.hover),

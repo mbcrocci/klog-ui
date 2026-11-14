@@ -29,7 +29,7 @@ impl Severity {
         }
     }
 
-    fn parse(v: &Value) -> Option<Severity> {
+    pub(crate) fn parse(v: &Value) -> Option<Severity> {
         if let Some(n) = v.as_u64() {
             // pino's numeric levels.
             return Some(match n {

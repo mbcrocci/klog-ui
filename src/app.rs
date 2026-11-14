@@ -2,9 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rune::{TextEdit, Tx, Waker};
+use rune::{PointerPress, TextEdit, Tx, Waker};
 use rune_kit::shell::PaneState;
 
 use crate::kube::{self, Inbox, Kind, LogStream, Msg, Resource};
@@ -12,6 +12,8 @@ use crate::logs::LogBuffer;
 
 /// Lines fetched from each pod when a stream starts.
 pub const TAIL: u32 = 500;
+/// How long a row's copy button shows a check after copying.
+const COPIED: Duration = Duration::from_millis(1500);
 /// How often the sidebar's list refreshes on its own.
 const REFRESH: Duration = Duration::from_secs(15);
 
@@ -74,6 +76,10 @@ pub struct App {
     pub filter: TextEdit,
     pub wrap: bool,
     pub format: Format,
+    /// The log line whose context menu is open, and where it opened.
+    pub line_menu: Option<(u64, PointerPress)>,
+    /// The line last copied, and when; its copy button shows a check for a moment.
+    pub copied: Option<(u64, Instant)>,
     /// When (on `poll`'s clock) the sidebar's list next refreshes.
     refresh_at: Option<f64>,
 }
@@ -96,6 +102,8 @@ pub fn init() -> App {
         filter: TextEdit::new(""),
         wrap: true,
         format: Format::Pretty,
+        line_menu: None,
+        copied: None,
         refresh_at: None,
     }
 }
@@ -113,11 +121,15 @@ pub fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.refresh_at = None;
         kube::refresh(s.mode, s.inbox.clone());
     }
+    let mut changed = false;
+    if s.copied.is_some_and(|(_, at)| at.elapsed() >= COPIED) {
+        s.copied = None;
+        changed = true;
+    }
     let msgs = s.inbox.drain();
     if msgs.is_empty() {
-        return false;
+        return changed;
     }
-    let mut changed = false;
     for msg in msgs {
         match msg {
             Msg::Context(c) => {
@@ -217,6 +229,23 @@ impl App {
 
     pub fn is_streaming(&self) -> bool {
         self.handle.is_some()
+    }
+
+    /// Puts a log line on the clipboard exactly as the pod wrote it.
+    pub fn copy_line(&mut self, id: u64, tx: &mut Tx) {
+        self.line_menu = None;
+        if let Some(l) = self.logs.get(id) {
+            tx.copy(l.text.clone());
+            self.copied = Some((id, Instant::now()));
+            tx.wake_after(COPIED);
+        }
+    }
+
+    /// Replaces the log filter's text and applies it.
+    pub fn set_filter(&mut self, text: String) {
+        self.filter.replace_text(text);
+        let q = self.filter.text.clone();
+        self.logs.set_query(&q);
     }
 
     pub fn refresh(&mut self) {

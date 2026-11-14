@@ -36,11 +36,95 @@ component kit `rune-kit`.
   - **Raw**: exactly what the pod wrote.
 
   Plain-text lines show as they are, with warning and error lines coloured by keyword.
-- **Filter**: case-insensitive substring match over the raw line and pod name.
+- **Filter** with a small query language: words, phrases, `field = value`, comparisons and
+  `and`/`or`/`not`, coloured as you type. See [Filtering logs](#filtering-logs).
+- **Copy any line raw**: from the copy button on hover or the right-click menu, in every format.
+  See [Copying lines](#copying-lines).
 - **Toolbar**: stream status, line count, wrap on/off, jump to latest, clear, stop/reconnect.
 - **Sidebar toggle**: ⇧⌘B (Ctrl+Shift+B on Linux and Windows).
 
-### Supported JSON dialects
+## Filtering logs
+
+The box at the top right filters the log as you type. A word matches anywhere in the line; a
+`key op value` comparison looks at one field of a structured (JSON) line.
+
+![A query in the filter](docs/filter-query.png)
+
+### Examples
+
+```text
+timeout                                   lines containing "timeout" (any case)
+"connection reset"                        a phrase, quoted with ' or "
+integration = '5f1e0a3b9c2d4e6f7a8b9c0d'  a field equals a value
+integration = 5f1e*                       ... with * as a wildcard
+integration = *                           lines that have the field at all
+err.message ~ token                       a nested field contains a value
+status >= 500                             numeric comparison
+level >= warn                             warnings and worse
+method != GET and msg !~ health           negations
+pod ~ xk2lp                               lines from one pod
+time >= 10:00:00 time < 10:05:00          a time window (time of day, as shown)
+(level = error or status >= 500) -health  grouping and exclusion
+```
+
+### Operators
+
+| Operator | Meaning |
+| --- | --- |
+| `=` or `==` | equals, ignoring case; `*` matches any run of characters |
+| `!=` | doesn't equal (true when the field is missing) |
+| `~` or `:` | contains, ignoring case |
+| `!~` | doesn't contain (true when the field is missing) |
+| `>` `>=` `<` `<=` | compares numbers as numbers, levels by severity, anything else as text |
+
+Spaces around operators are optional (`status>=500` works). Values with spaces or brackets need
+quotes; otherwise a value runs to the next space, so `time > 10:00:01` and `uri = /a/:id` need
+none.
+
+### Keys
+
+| Key | Refers to |
+| --- | --- |
+| `msg`, `message` | the message (the whole line for plain text) |
+| `level`, `lvl`, `severity` | the level: `trace` < `debug` < `info` < `warn` < `error` < `fatal`; plain-text lines get one from their keywords |
+| `logger` | the logger's name |
+| `time`, `ts` | the time of day, `HH:MM:SS.mmm` |
+| `pod` | `pod-name/container` |
+| `raw`, `line` | the line as the pod wrote it |
+| anything else | a JSON field: `integration`, `err.message` (dots go into nested objects), `tags.0` (array items) |
+
+Keys ignore case, and a field named with a dot (`log.origin`) is found before a nested path.
+Fields are matched after normalisation (see [Supported JSON dialects](#supported-json-dialects)),
+so Effect's `annotations` are top-level keys, and pino's `pid` and `hostname` aren't searchable
+by key (a plain word still finds them).
+
+### Combining
+
+Terms next to each other must all match (`and` is optional). `or` gives alternatives, and binds
+looser than `and`: `a b or c` is `(a and b) or c`. `not`, `-` or `!` before a term negates it,
+and parentheses group. `and`, `or` and `not` are case-insensitive; quote them to search for the
+words themselves.
+
+### While typing
+
+The query is coloured as you type: keys, operators, values and keywords each get a colour. While
+it's incomplete (an open quote, an operator with no value, an unclosed parenthesis) the box turns
+red, hovering it says what's missing, and the last complete query keeps filtering, so the list
+doesn't empty out mid-word. Hover the empty box for a syntax summary. The × clears it.
+
+## Copying lines
+
+- **Hover** a line: a copy button appears at its right end and shows a check once copied.
+- **Right-click** a line:
+  - **Copy line**: the line exactly as the pod wrote it.
+  - **Copy message**: just the message of a JSON line.
+  - **Show only this pod**: sets the filter to `pod ~ '<pod>'`.
+
+Copying takes the raw line in every format (Pretty, Tree or Raw), without the `[pod/…]` prefix
+kubectl adds. With line wrapping off, long lines can push the copy button out of view; the
+right-click menu works anywhere on the line.
+
+## Supported JSON dialects
 
 Lines are normalised into time, level, logger, message and fields:
 
@@ -93,6 +177,7 @@ Debug builds can render headless, with sample data and without touching the clus
 | `src/app.rs` | State, stream switching, periodic refresh |
 | `src/kube.rs` | `kubectl` processes on worker threads, and the inbox they feed the UI through |
 | `src/logs.rs` | Bounded log buffer, filtering, per-pod colour slots, plain-text level detection |
+| `src/query.rs` | The filter's query language: tokens, parser, matching, highlighting |
 | `src/structured.rs` | JSON parsing and normalisation, and the styled inline and tree text (no UI code) |
 | `src/view.rs` | Sidebar, toolbar and the virtualised log list |
 
