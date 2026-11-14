@@ -11,6 +11,8 @@ component kit `rune-kit`.
 
 ![Tree view](docs/tree.png)
 
+![Pods in the sidebar](docs/pods.png)
+
 ## Features
 
 - **Workloads sidebar**: a picker at the top switches what it lists — Deployments (default),
