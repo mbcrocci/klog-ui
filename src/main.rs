@@ -1,4 +1,4 @@
-//! A live Kubernetes log viewer: deployments in the sidebar, the selected one's pod logs
+//! A live Kubernetes log viewer: workloads (deployments, pods, services…) in the sidebar, the selected one's pod logs
 //! streaming in the main pane. Uses `kubectl` and the current kubeconfig context.
 //!
 //! `cargo run` opens the window. `cargo run -- --snap out.png --scene demo` renders sample data
@@ -13,8 +13,8 @@ mod view;
 use rune::{AppSpec, KeyEvent, Tx};
 use rune_kit::shell;
 
-use crate::app::{App, Deployments, Stream};
-use crate::kube::Deployment;
+use crate::app::{App, Resources, Stream};
+use crate::kube::{Kind, Resource};
 
 fn on_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
     if shell::is_sidebar_toggle(ev) {
@@ -31,16 +31,23 @@ fn on_close(s: &mut App, _: &mut Tx) {
 
 /// Sample data for headless snapshots.
 fn demo(s: &mut App) {
-    let d = |ns: &str, name: &str, ready, desired| Deployment { namespace: ns.into(), name: name.into(), ready, desired };
+    let d = |ns: &str, name: &str, ready: u32, desired: u32| Resource {
+        kind: Kind::Deployment,
+        namespace: ns.into(),
+        name: name.into(),
+        badge: format!("{ready}/{desired}"),
+        healthy: ready >= desired,
+    };
     s.context = "my-cluster".into();
-    s.deployments = Deployments::Loaded(vec![
+    let list = vec![
         d("default", "api", 2, 2),
         d("default", "worker", 1, 2),
         d("default", "web", 3, 3),
         d("ingress-nginx", "ingress-nginx-controller", 1, 1),
         d("monitoring", "grafana", 1, 1),
-    ]);
-    s.selected = Some("default/api".into());
+    ];
+    s.selected = list.first().cloned();
+    s.lists.insert(Kind::Deployment, Resources::Loaded(list));
     s.stream = Stream::Live;
     let lines = [
         r#"[pod/api-7d9f8b-xk2lp/api] {"level":"info","ts":"2026-11-14T10:00:01.120Z","logger":"http","msg":"listening","port":"8080"}"#,
@@ -61,12 +68,30 @@ fn demo_tree(s: &mut App) {
     s.format = app::Format::Tree;
 }
 
+fn demo_pods(s: &mut App) {
+    demo(s);
+    let p = |ns: &str, name: &str, badge: &str, healthy| Resource {
+        kind: Kind::Pod,
+        namespace: ns.into(),
+        name: name.into(),
+        badge: badge.into(),
+        healthy,
+    };
+    s.mode = Kind::Pod;
+    s.lists.insert(Kind::Pod, Resources::Loaded(vec![
+        p("default", "api-7d9f8b-qq81z", "1/1", true),
+        p("default", "api-7d9f8b-xk2lp", "1/1 ↻2", true),
+        p("default", "worker-5c6d7e-ab12c", "Pending", false),
+        p("monitoring", "grafana-6f7a8b-zz9yx", "1/1", true),
+    ]));
+}
+
 fn main() {
     rune::App::new(AppSpec {
         setup: Some(app::setup),
         poll: Some(app::poll),
         on_key: Some(on_key),
-        scenes: &[("demo", demo), ("demo-tree", demo_tree)],
+        scenes: &[("demo", demo), ("demo-tree", demo_tree), ("demo-pods", demo_pods)],
         min_size: Some((640.0, 360.0)),
         // Inter for the UI; the system's monospace font for log lines.
         families: ("Inter", "ui-monospace, JetBrains Mono, DejaVu Sans Mono, monospace"),

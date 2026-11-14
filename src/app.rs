@@ -1,23 +1,23 @@
 //! The app's state and everything that changes it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use rune::{TextEdit, Tx, Waker};
 use rune_kit::shell::PaneState;
 
-use crate::kube::{self, Deployment, Inbox, LogStream, Msg};
+use crate::kube::{self, Inbox, Kind, LogStream, Msg, Resource};
 use crate::logs::LogBuffer;
 
 /// Lines fetched from each pod when a stream starts.
 pub const TAIL: u32 = 500;
-/// How often the deployment list refreshes on its own.
+/// How often the sidebar's list refreshes on its own.
 const REFRESH: Duration = Duration::from_secs(15);
 
-pub enum Deployments {
+pub enum Resources {
     Loading,
-    Loaded(Vec<Deployment>),
+    Loaded(Vec<Resource>),
     Failed(String),
 }
 
@@ -55,12 +55,17 @@ pub struct App {
     pub sidebar: PaneState,
     pub inbox: Arc<Inbox>,
     pub context: String,
-    pub deployments: Deployments,
+    /// What the sidebar lists.
+    pub mode: Kind,
+    /// Whether the mode picker is open.
+    pub mode_open: bool,
+    /// The last list of each kind, so switching back shows it while it refreshes.
+    pub lists: HashMap<Kind, Resources>,
     /// Namespaces folded in the sidebar.
     pub folded: HashSet<String>,
     pub search: TextEdit,
-    /// `namespace/name` of the deployment shown.
-    pub selected: Option<String>,
+    /// The resource whose logs show; it stays while the sidebar lists another kind.
+    pub selected: Option<Resource>,
     pub stream: Stream,
     /// Each stream gets a generation so lines from a replaced one are dropped.
     generation: u64,
@@ -69,7 +74,7 @@ pub struct App {
     pub filter: TextEdit,
     pub wrap: bool,
     pub format: Format,
-    /// When (on `poll`'s clock) the deployment list next refreshes.
+    /// When (on `poll`'s clock) the sidebar's list next refreshes.
     refresh_at: Option<f64>,
 }
 
@@ -78,7 +83,9 @@ pub fn init() -> App {
         sidebar: PaneState::new(280.0).range(180.0, 520.0),
         inbox: Arc::new(Inbox::default()),
         context: String::new(),
-        deployments: Deployments::Loading,
+        mode: Kind::Deployment,
+        mode_open: false,
+        lists: HashMap::new(),
         folded: HashSet::new(),
         search: TextEdit::new(""),
         selected: None,
@@ -97,14 +104,14 @@ pub fn setup(s: &mut App, waker: Waker) {
     s.inbox.set_waker(waker);
     // Headless snapshots (`--snap`) render scenes from fixed data; don't touch the cluster.
     if rune::tooling::headless_run().is_none() {
-        kube::refresh(s.inbox.clone());
+        kube::refresh(s.mode, s.inbox.clone());
     }
 }
 
 pub fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if s.refresh_at.is_some_and(|due| clock >= due) {
         s.refresh_at = None;
-        kube::refresh(s.inbox.clone());
+        kube::refresh(s.mode, s.inbox.clone());
     }
     let msgs = s.inbox.drain();
     if msgs.is_empty() {
@@ -117,15 +124,26 @@ pub fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 changed |= s.context != c;
                 s.context = c;
             }
-            Msg::Deployments(r) => {
-                s.deployments = match r {
-                    Ok(list) => Deployments::Loaded(list),
-                    Err(e) => Deployments::Failed(e),
+            Msg::Resources { kind, list } => {
+                // The selected resource's badge follows the list.
+                if let (Ok(list), Some(sel)) = (&list, &mut s.selected)
+                    && let Some(fresh) = list.iter().find(|r| r.id() == sel.id())
+                {
+                    *sel = fresh.clone();
+                }
+                let fresh = match list {
+                    Ok(list) => Resources::Loaded(list),
+                    // A failed refresh keeps the last list rather than blanking the sidebar.
+                    Err(e) if !matches!(s.lists.get(&kind), Some(Resources::Loaded(_))) => Resources::Failed(e),
+                    Err(_) => continue,
                 };
+                s.lists.insert(kind, fresh);
                 changed = true;
                 // Keep the list fresh; ready counts change as pods roll.
-                s.refresh_at = Some(clock + REFRESH.as_secs_f64());
-                tx.wake_after(REFRESH);
+                if kind == s.mode {
+                    s.refresh_at = Some(clock + REFRESH.as_secs_f64());
+                    tx.wake_after(REFRESH);
+                }
             }
             Msg::Line { generation, text, stderr } if generation == s.generation => {
                 if matches!(s.stream, Stream::Connecting) && !stderr {
@@ -148,31 +166,39 @@ pub fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
 }
 
 impl App {
-    pub fn deployment(&self, id: &str) -> Option<&Deployment> {
-        match &self.deployments {
-            Deployments::Loaded(list) => list.iter().find(|d| d.id() == id),
-            _ => None,
-        }
+    /// The sidebar's list for the current mode.
+    pub fn resources(&self) -> &Resources {
+        self.lists.get(&self.mode).unwrap_or(&Resources::Loading)
     }
 
-    pub fn select(&mut self, id: String) {
-        if self.selected.as_deref() == Some(id.as_str()) {
+    /// Lists another kind in the sidebar; the stream shown carries on.
+    pub fn set_mode(&mut self, kind: Kind) {
+        self.mode_open = false;
+        if self.mode == kind {
             return;
         }
-        self.selected = Some(id);
+        self.mode = kind;
+        self.refresh();
+    }
+
+    pub fn select(&mut self, r: Resource) {
+        if self.selected.as_ref().is_some_and(|s| s.id() == r.id()) {
+            return;
+        }
+        self.selected = Some(r);
         self.connect();
     }
 
-    /// (Re)starts the stream for the selected deployment from a fresh buffer.
+    /// (Re)starts the stream for the selected resource from a fresh buffer.
     pub fn connect(&mut self) {
         self.handle = None;
         self.generation += 1;
         self.logs.clear();
-        let Some(d) = self.selected.as_deref().and_then(|id| self.deployment(id)).cloned() else {
+        let Some(r) = self.selected.clone() else {
             self.stream = Stream::Idle;
             return;
         };
-        match kube::stream_logs(&d, TAIL, self.generation, self.inbox.clone()) {
+        match kube::stream_logs(&r, TAIL, self.generation, self.inbox.clone()) {
             Ok(h) => {
                 self.handle = Some(h);
                 self.stream = Stream::Connecting;
@@ -194,6 +220,8 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
-        kube::refresh(self.inbox.clone());
+        // The timer restarts when this list lands.
+        self.refresh_at = None;
+        kube::refresh(self.mode, self.inbox.clone());
     }
 }

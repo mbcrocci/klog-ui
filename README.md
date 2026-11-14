@@ -1,7 +1,7 @@
 # klog-ui
 
-A native, GPU-rendered live log viewer for Kubernetes. Deployments are listed in a sidebar;
-pick one and the logs of all its pods stream into the main pane. JSON logs are parsed and shown
+A native, GPU-rendered live log viewer for Kubernetes. Deployments, pods, services and other
+workloads are listed in a sidebar; pick one and the logs of all its pods stream into the main pane. JSON logs are parsed and shown
 as readable, coloured rows or as an indented tree.
 
 Built with [Rune](https://github.com/anomalyco/rune), Anomaly's Rust UI framework, and its
@@ -13,11 +13,14 @@ component kit `rune-kit`.
 
 ## Features
 
-- **Deployments sidebar**: every deployment in the cluster, grouped by namespace in foldable
-  sections, with ready/desired replica counts and a dot on deployments that aren't fully ready.
-  Filter by name; the list refreshes every 15 s (or with the refresh button). The footer shows
-  the current kubectl context.
-- **Live logs**: follows every pod and container of the selected deployment
+- **Workloads sidebar**: a picker at the top switches what it lists — Deployments (default),
+  Pods, Services, StatefulSets, DaemonSets or Jobs. Everything of that kind in the cluster,
+  grouped by namespace in foldable sections, with a status badge (ready/desired, a pod's ready
+  containers and restarts or its phase, a service's type, a job's completions) and a dot on
+  those that need attention. Filter by name; the list refreshes every 15 s (or with the refresh
+  button). Switching kinds keeps the current stream. The footer shows the current kubectl
+  context.
+- **Live logs**: follows every pod and container behind the selected workload
   (`kubectl logs --follow --all-pods --all-containers`), starting from the last 500 lines of
   each pod. The view sticks to the bottom while new lines arrive and stops following when you
   scroll up. Rows are virtualised; the newest 20,000 lines are kept.
@@ -76,6 +79,7 @@ Debug builds can render headless, with sample data and without touching the clus
 ```sh
 ./target/debug/klog-ui --snap out.png --scene demo          # Pretty
 ./target/debug/klog-ui --snap out.png --scene demo-tree     # Tree
+./target/debug/klog-ui --snap out.png --scene demo-pods     # Pods in the sidebar
 ./target/debug/klog-ui --snap out.png --scene demo --theme light --size 1300x700
 ```
 

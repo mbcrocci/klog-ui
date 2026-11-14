@@ -1,14 +1,17 @@
-//! The window: deployments in a sidebar, the selected deployment's live logs in the main pane.
+//! The window: workloads in a sidebar, the selected one's live logs in the main pane.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use rune::{Color, Cx, El, GrowthSpec, Icon, ScrollSpec, Span, col, el, oklch, rich, row, text};
-use rune_kit::shell::{PaneMotion, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle, SplitView, Toolbar};
-use rune_kit::{Badge, BadgeVariant, Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, Spinner, TextInput, glyphs};
+use rune::{Color, Cx, El, GrowthSpec, Icon, ScrollSpec, Span, Tx, col, el, icon, oklch, rich, row, text};
+use rune_kit::shell::{PaneMotion, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle, SplitView, TOOLBAR_HEIGHT, Toolbar};
+use rune_kit::{
+    Badge, BadgeVariant, Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, Spinner, TextInput,
+    glyphs,
+};
 
-use crate::app::{App, Deployments, Format, Stream};
-use crate::kube::Deployment;
+use crate::app::{App, Format, Resources, Stream};
+use crate::kube::{Kind, Resource};
 use crate::logs::{Level, Line};
 use crate::structured::{self, Entry, Severity, Tok};
 
@@ -23,6 +26,12 @@ icon!(PLAY, "logui-play", r#"<path d="M5 3.75L12 8L5 12.25Z" stroke="currentColo
 icon!(TRASH, "logui-trash", r#"<path d="M3.5 4.5H12.5M6.5 4.5V3H9.5V4.5M4.75 4.5L5.25 13H10.75L11.25 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#);
 icon!(WRAP, "logui-wrap", r#"<path d="M3 4H13M3 8H11A2 2 0 0 1 11 12H8.5M10 10.5L8.5 12L10 13.5M3 12H6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#);
 icon!(BOTTOM, "logui-bottom", r#"<path d="M8 3V11M4.5 7.5L8 11L11.5 7.5M4 13H12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#);
+icon!(POD, "logui-pod", r#"<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.1" fill="none"/><circle cx="8" cy="8" r="1.75" fill="currentColor"/>"#);
+icon!(SERVICE, "logui-service", r#"<path d="M8 3V6.5M8 6.5L4 10M8 6.5L12 10" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><circle cx="8" cy="3" r="1.25" stroke="currentColor" stroke-width="1.1" fill="none"/><circle cx="4" cy="11.5" r="1.5" stroke="currentColor" stroke-width="1.1" fill="none"/><circle cx="12" cy="11.5" r="1.5" stroke="currentColor" stroke-width="1.1" fill="none"/>"#);
+icon!(STACK, "logui-stack", r#"<path d="M8 2.5L13.5 5.25L8 8L2.5 5.25Z M2.5 8L8 10.75L13.5 8M2.5 10.75L8 13.5L13.5 10.75" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" fill="none"/>"#);
+icon!(NODES, "logui-nodes", r#"<rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.1" fill="none"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.1" fill="none"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.1" fill="none"/><rect x="9" y="9" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.1" fill="none"/>"#);
+icon!(JOB, "logui-job", r#"<circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M5.75 8.25L7.25 9.75L10.25 6.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#);
+icon!(LOGO, "logui-logo", r#"<path d="M8 1.75L13.5 4.9V11.1L8 14.25L2.5 11.1V4.9Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/><path d="M5.5 6.5H10.5M5.5 8.5H10.5M5.5 10.5H8.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/>"#);
 icon!(BOX, "logui-box", r#"<path d="M8 2.5L13 5V11L8 13.5L3 11V5Z M3 5L8 7.5L13 5M8 7.5V13.5" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" fill="none"/>"#);
 
 /// Estimated height of a log row, for rows not yet measured.
@@ -31,26 +40,64 @@ const LOG_SCROLL: &str = "log-scroll";
 
 pub fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = Kit::neutral(cx.system_dark());
-    SplitView::new(main(s, &k))
-        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
+    let mut overlays = Vec::new();
+    let inset = cx.titlebar_inset();
+    let shell = SplitView::new(main(s, &k))
+        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k, &mut overlays))
         .toolbar(toolbar(s, &k))
-        .titlebar_inset(cx.titlebar_inset())
+        .titlebar_inset(inset)
         .sidebar_toggle(SidebarToggle::new().in_header())
         .pane_motion(PaneMotion::new())
         .reduced_motion(cx.is_reduced_motion())
-        .build(&k)
+        .build(&k);
+    rune_kit::root(shell.child(brand(s, &k, inset)), overlays)
+}
+
+/// The app's name in the sidebar's title bar row, between the traffic lights and the sidebar
+/// toggle. It fades with the sidebar, whose toolbar takes the row while it's closed.
+fn brand(s: &App, k: &Kit, inset: f32) -> El {
+    // Where `SidebarToggle` starts: 8 past the traffic lights, or 12 from the edge without them.
+    let x = if inset > 0.0 { inset + 8.0 } else { 16.0 };
+    let side = 24.0;
+    let open = s.sidebar.is_open();
+    row()
+        .key("brand")
+        .gap(8.0)
+        .center_y()
+        .h(side)
+        .w((s.sidebar.width() - x - side - 16.0).max(0.0))
+        .absolute(x, (TOOLBAR_HEIGHT - side) / 2.0)
+        .opacity(if open { 1.0 } else { 0.0 })
+        .window_drag()
+        .child(icon(&LOGO, 16.0).color(k.c.text_base))
+        .child(text("Kube Logs").font(k.ty.ui_medium).color(k.c.text_base).truncate().grow(1.0).shrink().min_w(0.0))
 }
 
 // ---- Sidebar ---------------------------------------------------------------------------------
 
-fn sidebar(s: &App, k: &Kit) -> El {
+fn sidebar(s: &App, k: &Kit, overlays: &mut Vec<El>) -> El {
+    let plurals = Kind::ALL.map(Kind::plural);
+    let mode = Select::new("mode", &plurals)
+        .label("Show")
+        .current(Some(s.mode.plural()))
+        .open(s.mode_open)
+        .on_toggle(|s: &mut App| s.mode_open = !s.mode_open)
+        .on_close(|s: &mut App| s.mode_open = false)
+        .on_choose(|s: &mut App, v: &str, _: &mut Tx| {
+            if let Some(kind) = Kind::from_plural(v) {
+                s.set_mode(kind);
+            }
+        })
+        .build(k, overlays);
     let search = TextInput::new(&s.search)
-        .placeholder("Filter deployments")
+        .placeholder(format!("Filter {}", s.mode.plural().to_lowercase()))
         .leading_icon(&glyphs::SEARCH)
         .clear_button()
+        .width(None)
         .on_edit(|s: &mut App| &mut s.search)
+        .on_action(|s: &mut App, _| s.search.clear())
         .build(k)
-        .key("deploy-search");
+        .key("resource-search");
     let footer = row()
         .w_full()
         .px(8.0)
@@ -68,38 +115,42 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .child(
             IconButton::new(&REFRESH)
                 .variant(IconButtonVariant::GhostMuted)
-                .help("Refresh deployments")
+                .help(format!("Refresh {}", s.mode.plural().to_lowercase()))
                 .on_press(|s: &mut App| s.refresh())
                 .build(k)
                 .key("refresh"),
         );
-    let mut sb = Sidebar::new().label("Deployments").header(search).footer(footer.key("context"));
+    let mut sb = Sidebar::new()
+        .label(s.mode.plural())
+        .header(row().key("mode-row").ml(-8.0).child(mode))
+        .header(search)
+        .footer(footer.key("context"));
 
-    match &s.deployments {
-        Deployments::Loading => {
+    match s.resources() {
+        Resources::Loading => {
             sb = sb.child(row().w_full().py(16.0).center().child(Spinner::new().build(k)).key("loading"));
         }
-        Deployments::Failed(err) => {
+        Resources::Failed(err) => {
             sb = sb.child(
                 col()
                     .w_full()
                     .px(8.0)
                     .py(12.0)
                     .gap(8.0)
-                    .child(text("Couldn't list deployments").font(k.ty.ui_medium).color(k.c.danger.fg))
+                    .child(text(format!("Couldn't list {}", s.mode.plural().to_lowercase())).font(k.ty.ui_medium).color(k.c.danger.fg))
                     .child(text(err.clone()).font(k.ty.small).color(k.c.text_muted).wrap_anywhere())
                     .child(Button::new("Retry").variant(ButtonVariant::Outline).on_press(|s: &mut App| s.refresh()).build(k))
                     .key("error"),
             );
         }
-        Deployments::Loaded(list) => {
+        Resources::Loaded(list) => {
             let query = s.search.text.trim().to_lowercase();
-            let mut by_ns: BTreeMap<&str, Vec<&Deployment>> = BTreeMap::new();
-            for d in list.iter().filter(|d| query.is_empty() || d.id().to_lowercase().contains(&query)) {
-                by_ns.entry(&d.namespace).or_default().push(d);
+            let mut by_ns: BTreeMap<&str, Vec<&Resource>> = BTreeMap::new();
+            for r in list.iter().filter(|r| query.is_empty() || format!("{}/{}", r.namespace, r.name).to_lowercase().contains(&query)) {
+                by_ns.entry(&r.namespace).or_default().push(r);
             }
             if by_ns.is_empty() {
-                let msg = if list.is_empty() { "No deployments" } else { "No matches" };
+                let msg = if list.is_empty() { format!("No {}", s.mode.plural().to_lowercase()) } else { "No matches".to_owned() };
                 sb = sb.child(text(msg).font(k.ty.small).color(k.c.text_faint).key("empty"));
             }
             for (ns, items) in by_ns {
@@ -115,7 +166,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                             s.folded.insert(ns_owned.clone());
                         }
                     })
-                    .rows(items.into_iter().map(|d| deployment_row(s, d, k)));
+                    .rows(items.into_iter().map(|r| resource_row(s, r, k)));
                 sb = sb.section(section);
             }
         }
@@ -123,27 +174,39 @@ fn sidebar(s: &App, k: &Kit) -> El {
     sb.build(k)
 }
 
-fn deployment_row(s: &App, d: &Deployment, k: &Kit) -> El {
-    let id = d.id();
-    let unhealthy = d.ready < d.desired;
-    let mut r = SidebarRow::new(d.name.clone())
-        .icon(&BOX)
-        .badge(format!("{}/{}", d.ready, d.desired))
-        .selected(s.selected.as_deref() == Some(id.as_str()))
-        .on_select({
-            let id = id.clone();
-            move |s: &mut App, _| s.select(id.clone())
-        });
-    if unhealthy {
-        r = r.status(RowStatus::Attention);
+fn kind_icon(kind: Kind) -> &'static Icon {
+    match kind {
+        Kind::Deployment => &BOX,
+        Kind::Pod => &POD,
+        Kind::Service => &SERVICE,
+        Kind::StatefulSet => &STACK,
+        Kind::DaemonSet => &NODES,
+        Kind::Job => &JOB,
     }
-    r.build(k).key(id)
+}
+
+fn resource_row(s: &App, r: &Resource, k: &Kit) -> El {
+    let id = r.id();
+    let mut row = SidebarRow::new(r.name.clone())
+        .icon(kind_icon(r.kind))
+        .selected(s.selected.as_ref().is_some_and(|sel| sel.id() == id))
+        .on_select({
+            let r = r.clone();
+            move |s: &mut App, _| s.select(r.clone())
+        });
+    if !r.badge.is_empty() {
+        row = row.badge(r.badge.clone());
+    }
+    if !r.healthy {
+        row = row.status(RowStatus::Attention);
+    }
+    row.build(k).key(id)
 }
 
 // ---- Toolbar ---------------------------------------------------------------------------------
 
 fn toolbar(s: &App, k: &Kit) -> Toolbar {
-    let Some(d) = s.selected.as_deref().and_then(|id| s.deployment(id)) else {
+    let Some(d) = &s.selected else {
         return Toolbar::new().title("Logs");
     };
     let status = match &s.stream {
@@ -154,11 +217,17 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
         Stream::Live => Badge::new("● Live").variant(BadgeVariant::Accent).build(k),
         Stream::Ended(why) => Badge::new(why.clone()).variant(BadgeVariant::Subtle).build(k),
     };
+    // Gives way to the trailing controls in a narrow window: the name and namespace truncate.
     let leading = row()
         .gap(10.0)
         .center_y()
-        .child(text(d.name.clone()).font(k.ty.ui_medium).color(k.c.text_base))
-        .child(text(d.namespace.clone()).font(k.ty.small).color(k.c.text_faint))
+        .shrink()
+        .min_w(0.0)
+        .clip_rounded(0.0)
+        .help(format!("{}/{}", d.namespace, d.name))
+        .child(icon(kind_icon(d.kind), 16.0).color(k.c.icon_muted))
+        .child(text(d.name.clone()).font(k.ty.ui_medium).color(k.c.text_base).truncate().max_w(320.0))
+        .child(text(d.namespace.clone()).font(k.ty.small).color(k.c.text_faint).truncate().shrink().min_w(0.0))
         .child(status.key("stream-status"));
 
     let count = if s.filter.text.trim().is_empty() {
@@ -175,6 +244,10 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
         .on_change(|s: &mut App, _| {
             let q = s.filter.text.clone();
             s.logs.set_query(&q);
+        })
+        .on_action(|s: &mut App, _| {
+            s.filter.clear();
+            s.logs.set_query("");
         })
         .build(k)
         .key("log-filter");
@@ -222,7 +295,7 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
 fn main(s: &App, k: &Kit) -> El {
     let body = col().key("logs").w_full().h_full().min_h(0.0);
     if s.selected.is_none() {
-        return body.center().gap(6.0).child(text("Select a deployment").font(k.ty.ui_medium).color(k.c.text_muted)).child(
+        return body.center().gap(6.0).child(text("Select a workload").font(k.ty.ui_medium).color(k.c.text_muted)).child(
             text("Its pods' logs stream here live.").font(k.ty.small).color(k.c.text_faint),
         );
     }
