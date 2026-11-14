@@ -1,0 +1,77 @@
+//! A live Kubernetes log viewer: deployments in the sidebar, the selected one's pod logs
+//! streaming in the main pane. Uses `kubectl` and the current kubeconfig context.
+//!
+//! `cargo run` opens the window. `cargo run -- --snap out.png --scene demo` renders sample data
+//! headless, without touching the cluster.
+
+mod app;
+mod kube;
+mod logs;
+mod structured;
+mod view;
+
+use rune::{AppSpec, KeyEvent, Tx};
+use rune_kit::shell;
+
+use crate::app::{App, Deployments, Stream};
+use crate::kube::Deployment;
+
+fn on_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
+    if shell::is_sidebar_toggle(ev) {
+        s.sidebar.toggle();
+        return true;
+    }
+    false
+}
+
+fn on_close(s: &mut App, _: &mut Tx) {
+    // Stops kubectl rather than leaving it following logs after the window is gone.
+    s.disconnect();
+}
+
+/// Sample data for headless snapshots.
+fn demo(s: &mut App) {
+    let d = |ns: &str, name: &str, ready, desired| Deployment { namespace: ns.into(), name: name.into(), ready, desired };
+    s.context = "my-cluster".into();
+    s.deployments = Deployments::Loaded(vec![
+        d("default", "api", 2, 2),
+        d("default", "worker", 1, 2),
+        d("default", "web", 3, 3),
+        d("ingress-nginx", "ingress-nginx-controller", 1, 1),
+        d("monitoring", "grafana", 1, 1),
+    ]);
+    s.selected = Some("default/api".into());
+    s.stream = Stream::Live;
+    let lines = [
+        r#"[pod/api-7d9f8b-xk2lp/api] {"level":"info","ts":"2026-11-14T10:00:01.120Z","logger":"http","msg":"listening","port":"8080"}"#,
+        r#"[pod/api-7d9f8b-qq81z/api] {"level":"info","ts":"2026-11-14T10:00:03.481Z","logger":"stripe","msg":"request","URI":"/stripe/webhooks/:integrationId","method":"POST","status":200,"error":null,"latency":"375.265275ms"}"#,
+        r#"[pod/api-7d9f8b-xk2lp/api] {"level":40,"time":1794650404812,"pid":1,"hostname":"api-7d9f8b-xk2lp","integration":"5f1e0a3b9c2d4e6f7a8b9c0d","attempts":3,"msg":"slow query on orders"}"#,
+        r#"[pod/api-7d9f8b-qq81z/api] {"level":50,"time":1794650406002,"pid":1,"hostname":"api-7d9f8b-qq81z","integration":"5f1e0a3b9c2d4e6f7a8b9c1e","err":{"type":"Error","message":"invalid_request: Invalid Refresh Token","stack":"Error: invalid_request: Invalid Refresh Token\n    at getRefreshedIntegration (/app/dist/index.cjs:64063:13)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async updateIntegration (/app/dist/index.cjs:64190:20)"},"msg":"unable to refresh integration"}"#,
+        r##"[pod/api-7d9f8b-xk2lp/api] {"message":["Extension sync published","5f1e0a3b9c2d4e6f7a8b9c2f",{"extensions":5}],"level":"INFO","timestamp":"2026-11-14T10:00:07.694Z","annotations":{"workPlanID":"5f1e0a3b9c2d4e6f7a8b9c3a","workType":"extensions.sync"},"spans":{},"fiberId":"#20"}"##,
+        r#"[pod/api-7d9f8b-qq81z/api] {"time":"2026-11-14T10:00:08.490358595Z","level":"INFO","msg":"completed work plan","worker_id":"worker-1","plan":{"ID":"5f1e0a3b9c2d4e6f7a8b9c4b","PlanType":"import_orders","RetryCount":0,"Options":{"integration":"5f1e0a3b9c2d4e6f7a8b9c5c","full":true}}}"#,
+        "[pod/api-7d9f8b-xk2lp/api] 10.244.0.224 - - [14/Nov/2026:10:00:09 +0000] \"GET /health HTTP/1.1\" 200 2 \"-\" \"kube-probe/1.31\"",
+    ];
+    for l in lines {
+        s.logs.push(l.into(), false);
+    }
+}
+
+fn demo_tree(s: &mut App) {
+    demo(s);
+    s.format = app::Format::Tree;
+}
+
+fn main() {
+    rune::App::new(AppSpec {
+        setup: Some(app::setup),
+        poll: Some(app::poll),
+        on_key: Some(on_key),
+        scenes: &[("demo", demo), ("demo-tree", demo_tree)],
+        min_size: Some((640.0, 360.0)),
+        // Inter for the UI; the system's monospace font for log lines.
+        families: ("Inter", "ui-monospace, JetBrains Mono, DejaVu Sans Mono, monospace"),
+        ..AppSpec::new("Kube Logs", (1200.0, 760.0), app::init, view::view)
+    })
+    .on_close(on_close)
+    .run();
+}

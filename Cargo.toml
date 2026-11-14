@@ -1,0 +1,24 @@
+[package]
+name = "log-ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Rune is pre-release: pin a `dev` rev (never rewritten) and patch the same crates it patches.
+rune = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "6f85c4ea177372f398397948f2529cdeb6ce2388" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 2
