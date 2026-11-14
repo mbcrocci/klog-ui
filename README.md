@@ -1,4 +1,4 @@
-# log-ui
+# klog-ui
 
 A native, GPU-rendered live log viewer for Kubernetes. Deployments are listed in a sidebar;
 pick one and the logs of all its pods stream into the main pane. JSON logs are parsed and shown
@@ -74,9 +74,9 @@ cargo clippy --all-targets
 Debug builds can render headless, with sample data and without touching the cluster:
 
 ```sh
-./target/debug/log-ui --snap out.png --scene demo          # Pretty
-./target/debug/log-ui --snap out.png --scene demo-tree     # Tree
-./target/debug/log-ui --snap out.png --scene demo --theme light --size 1300x700
+./target/debug/klog-ui --snap out.png --scene demo          # Pretty
+./target/debug/klog-ui --snap out.png --scene demo-tree     # Tree
+./target/debug/klog-ui --snap out.png --scene demo --theme light --size 1300x700
 ```
 
 ### Layout
