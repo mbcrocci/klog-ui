@@ -7,11 +7,11 @@ as readable, coloured rows or as an indented tree.
 Built with [Rune](https://github.com/anomalyco/rune), Anomaly's Rust UI framework, and its
 component kit `rune-kit`.
 
-![Pretty view](docs/pretty.png)
+![Pretty view](docs/view-pretty.png)
 
-![Tree view](docs/tree.png)
+![Tree view](docs/view-tree.png)
 
-![Pods in the sidebar](docs/pods.png)
+![Pods in the sidebar](docs/sidebar-pods.png)
 
 ## Features
 
