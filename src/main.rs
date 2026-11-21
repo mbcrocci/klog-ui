@@ -9,6 +9,7 @@ mod kube;
 mod logs;
 mod query;
 mod structured;
+mod theme;
 mod view;
 
 use rune::{AppSpec, KeyEvent, Tx};

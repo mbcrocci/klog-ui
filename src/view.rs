@@ -41,7 +41,7 @@ const ROW: f32 = 20.0;
 const LOG_SCROLL: &str = "log-scroll";
 
 pub fn view(s: &App, cx: &mut Cx<App>) -> El {
-    let k = Kit::neutral(cx.system_dark());
+    let k = s.theme.kit(cx.system_dark());
     let mut overlays = Vec::new();
     let inset = cx.titlebar_inset();
     let shell = SplitView::new(main(s, &k, &mut overlays))
@@ -241,9 +241,9 @@ fn toolbar(s: &App, k: &Kit) -> Toolbar {
         .into_iter()
         .map(|(r, part)| {
             let c = match part {
-                Part::Key => tok_color(Tok::Logger, k.dark, k),
+                Part::Key => tok_color(Tok::Logger, k.dark, k, &s.theme),
                 Part::Op | Part::Keyword => k.c.text_faint,
-                Part::Value => tok_color(Tok::Str, k.dark, k),
+                Part::Value => tok_color(Tok::Str, k.dark, k, &s.theme),
             };
             Span::new(r.start, r.end).color(c)
         })
@@ -369,7 +369,7 @@ fn main(s: &App, k: &Kit, overlays: &mut Vec<El>) -> El {
         .virtual_rows(s.logs.shown_len(), ROW, |s: &App, i| Cow::Owned(s.logs.shown_id(i).to_string()), move |s: &App, i| {
             s.logs.shown(i).map_or_else(el, |l| log_row(l, s, &kit, dark))
         })
-        .virtual_rows_version(s.logs.version);
+        .virtual_rows_version((s.logs.version, s.theme.revision));
     let viewport = col().key(LOG_SCROLL).w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: true });
     let viewport = if s.wrap { viewport.child(rows) } else { viewport.scroll_xy().child(rows) };
     body.fill(k.c.bg_base).child(viewport).child(line_menu(s, k, overlays))
@@ -386,7 +386,7 @@ fn log_row(l: &Line, s: &App, k: &Kit, dark: bool) -> El {
     // The pod's unique suffix only, small; the whole pod/container name is in its tooltip.
     let mut small = mono;
     small.size = 10.5; // keeps the mono line height, so it sits on the line's baseline
-    let source = text(short_source(&l.source)).font(small).color(source_color(l.slot)).truncate().w(SOURCE_W).help(l.source.clone());
+    let source = text(short_source(&l.source)).font(small).color(source_color(l.slot, &s.theme)).truncate().w(SOURCE_W).help(l.source.clone());
     let line = row().w_full().px(12.0).py(1.0).gap(10.0).child(source);
     let line = match (&l.entry, s.format) {
         (Some(e), Format::Pretty | Format::Tree) => structured_row(line, e, s, k, dark, ink),
@@ -443,12 +443,12 @@ fn structured_row(line: El, e: &Entry, s: &App, k: &Kit, dark: bool, ink: Color)
     let mut spans = Vec::new();
     if let Some(logger) = &e.logger {
         content.push_str(logger);
-        spans.push(Span::new(0, logger.len()).color(tok_color(Tok::Logger, dark, k)));
+        spans.push(Span::new(0, logger.len()).color(tok_color(Tok::Logger, dark, k, &s.theme)));
         content.push_str("  ");
     }
     let shift = content.len();
     content.push_str(&body.text);
-    spans.extend(body.runs.iter().map(|&(a, b, t)| Span::new(a + shift, b + shift).color(tok_color(t, dark, k))));
+    spans.extend(body.runs.iter().map(|&(a, b, t)| Span::new(a + shift, b + shift).color(tok_color(t, dark, k, &s.theme))));
     let head = rich(content, spans).font(mono).color(ink).selectable(true);
     let head = if s.wrap { head.wrap_anywhere() } else { head };
 
@@ -456,7 +456,7 @@ fn structured_row(line: El, e: &Entry, s: &App, k: &Kit, dark: bool, ink: Color)
     if tree {
         let fields = structured::expanded(e);
         if !fields.text.is_empty() {
-            let spans = fields.runs.iter().map(|&(a, b, t)| Span::new(a, b).color(tok_color(t, dark, k))).collect();
+            let spans = fields.runs.iter().map(|&(a, b, t)| Span::new(a, b).color(tok_color(t, dark, k, &s.theme))).collect();
             message = message.child(
                 el().key("fields")
                     .mt(2.0)
@@ -471,7 +471,17 @@ fn structured_row(line: El, e: &Entry, s: &App, k: &Kit, dark: bool, ink: Color)
 }
 
 /// Syntax colours for structured text, tuned for each appearance.
-fn tok_color(t: Tok, dark: bool, k: &Kit) -> Color {
+fn tok_color(t: Tok, dark: bool, k: &Kit, theme: &crate::theme::Theme) -> Color {
+    let name = match t {
+        Tok::Logger => "magenta",
+        Tok::Str => "green",
+        Tok::Num => "blue",
+        Tok::Bool | Tok::Null => "cyan",
+        _ => "",
+    };
+    if let Some(color) = theme.color(name) {
+        return color;
+    }
     let l = if dark { 0.78 } else { 0.50 };
     match t {
         Tok::Key => k.c.text_muted,
@@ -492,6 +502,10 @@ fn short_source(source: &str) -> String {
 
 /// A distinct colour per pod, so lines from one replica read as a group. Golden-angle steps
 /// keep any few pods far apart on the hue circle.
-fn source_color(slot: usize) -> Color {
+fn source_color(slot: usize, theme: &crate::theme::Theme) -> Color {
+    const COLORS: [&str; 6] = ["yellow", "cyan", "magenta", "green", "blue", "red"];
+    if let Some(color) = theme.color(COLORS[slot % COLORS.len()]) {
+        return color;
+    }
     oklch(0.74, 0.11, (40.0 + slot as f32 * 137.5) % 360.0)
 }

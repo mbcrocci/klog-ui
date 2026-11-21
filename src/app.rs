@@ -54,6 +54,8 @@ pub enum Stream {
 }
 
 pub struct App {
+    pub theme: crate::theme::Theme,
+    theme_check_at: f64,
     pub sidebar: PaneState,
     pub inbox: Arc<Inbox>,
     pub context: String,
@@ -86,6 +88,8 @@ pub struct App {
 
 pub fn init() -> App {
     App {
+        theme: crate::theme::Theme::new(),
+        theme_check_at: 0.0,
         sidebar: PaneState::new(280.0).range(180.0, 520.0),
         inbox: Arc::new(Inbox::default()),
         context: String::new(),
@@ -122,6 +126,15 @@ pub fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         kube::refresh(s.mode, s.inbox.clone());
     }
     let mut changed = false;
+    // Re-reading a small palette also follows replaced symlinks and atomic file writes.
+    // The timer runs even without log traffic, but never reads on every rendered frame.
+    if rune::tooling::headless_run().is_none() {
+        if clock >= s.theme_check_at {
+            changed |= s.theme.refresh();
+            s.theme_check_at = clock + 0.5;
+        }
+        tx.wake_after(Duration::from_secs_f64((s.theme_check_at - clock).max(0.001)));
+    }
     if s.copied.is_some_and(|(_, at)| at.elapsed() >= COPIED) {
         s.copied = None;
         changed = true;

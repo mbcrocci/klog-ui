@@ -42,6 +42,8 @@ component kit `rune-kit`.
   See [Copying lines](#copying-lines).
 - **Toolbar**: stream status, line count, wrap on/off, jump to latest, clear, stop/reconnect.
 - **Sidebar toggle**: ⇧⌘B (Ctrl+Shift+B on Linux and Windows).
+- **Live Omarchy colours**: follows the desktop palette automatically, including controls,
+  severity colours, structured-log syntax and per-pod colours.
 
 ## Filtering logs
 
@@ -146,6 +148,23 @@ Empty objects and arrays and `null` fields are hidden in Pretty and Tree; Raw ke
 - Linux: `libxkbcommon` and `wayland` development packages (Arch: `pacman -S libxkbcommon
   wayland`; Debian/Ubuntu: `apt-get install libxkbcommon-dev libwayland-dev`).
 
+## Omarchy theme integration
+
+On Omarchy, the app reads `~/.local/state/omarchy/current/theme/colors.toml`
+(or `$XDG_STATE_HOME/omarchy/current/theme/colors.toml` when set). Background, foreground
+and accent colours seed the UI palette; red, yellow, green and blue supply status colours,
+and the theme's palette colours are used for log syntax and pod labels. Light and dark
+appearance is derived from the palette rather than the system appearance setting.
+
+Theme changes apply to the open window within about half a second, without restarting or
+interrupting the log stream. The app re-reads the logical path, so replacing the theme symlink
+or atomically replacing `colors.toml` works too. During missing or invalid intermediate files,
+it keeps the last valid palette. Without a valid Omarchy palette at startup, it uses the
+original system light/dark appearance. No Omarchy configuration is modified.
+
+Headless previews also use the current Omarchy palette. To render the built-in palette instead
+(including when testing `--theme light`), point `XDG_STATE_HOME` at an empty directory.
+
 ## Run
 
 ```sh
@@ -180,6 +199,7 @@ Debug builds can render headless, with sample data and without touching the clus
 | `src/query.rs` | The filter's query language: tokens, parser, matching, highlighting |
 | `src/structured.rs` | JSON parsing and normalisation, and the styled inline and tree text (no UI code) |
 | `src/view.rs` | Sidebar, toolbar and the virtualised log list |
+| `src/theme.rs` | Omarchy palette loading, validation and semantic UI colours |
 
 Rune is pre-release, so `Cargo.toml` pins a `dev` revision and patches the same crates Rune
 patches. When bumping it, use one revision everywhere and copy any new `[patch.crates-io]`
